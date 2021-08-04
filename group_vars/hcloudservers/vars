@@ -1,0 +1,4 @@
+---
+# nonsensitive data
+# sensitiv data
+hcloud_token: "{{ vault_hcloud_token }}"

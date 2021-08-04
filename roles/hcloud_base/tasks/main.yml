@@ -1,0 +1,236 @@
+---
+
+- name: Print inventory_hostname
+  debug:
+    msg:
+      - "{{ inventory_hostname }}"
+  tags: 
+    - hcloud_cleanup
+
+- name: Return all records associated with the user
+  uri:
+    url: https://dns.hetzner.com/api/v1/records
+    method: GET
+    status_code: 200
+    headers:
+      Content-Type: application/json
+      Auth-API-Token: "{{ hetzner_dns_token }}"
+  register: allZoneRecords
+  tags: 
+    - hcloud_cleanup
+
+- name: Collecting A and AAAA record of the actual server
+  set_fact:
+    records: "{{ allZoneRecords.json.records | json_query(jmesquery) }}"
+  vars:
+    jmesquery: " [? name==`{{ inventory_hostname_short }}`].{ created: created, id: id, modified: modified, name: name, type: type, value: value, zone_id: zone_id }"
+  tags: 
+    - hcloud_cleanup
+
+- name: Print collected records
+  debug:
+    var: records
+  tags: 
+    - hcloud_cleanup
+
+- name: Delete old DNS entries of the actual server
+  uri:
+    url: https://dns.hetzner.com/api/v1/records/{{ item.id }}
+    method: DELETE
+    status_code: 200
+    headers:
+      Content-Type: application/json
+      Auth-API-Token: "{{ hetzner_dns_token }}"
+  with_items: "{{ records | list }}"
+  when: records is defined and records != []
+  tags: 
+    - hcloud_cleanup
+
+- name: Gather hcloud datacenter info
+  hcloud_datacenter_info:
+    api_token: "{{ hcloud_token }}"
+  register: hc_datacenter
+  tags:
+    - hcloud_info  
+
+- name: Print hc_datacenter
+  debug:
+    var: hc_datacenter
+  tags:
+    - hcloud_info  
+
+- name: Gather hcloud location infos
+  hcloud_location_info:
+    api_token: "{{ hcloud_token }}"
+  register: hc_location_info
+  tags:
+    - hcloud_info
+
+- name: Print hc_location_info
+  debug:
+    var: hc_location_info
+  tags:
+    - hcloud_info
+
+- name: get old server info if available 
+  hcloud_server_info:
+    api_token: "{{ hcloud_token }}"
+    name: "{{ inventory_hostname_short }}"
+  register: oldServer
+  tags: 
+    - hcloud_cleanup
+
+- name: Print old server infos
+  debug:
+    var: oldServer
+  tags: 
+    - hcloud_cleanup
+
+- name: run command ssh-keygen to remove old server ssh keys from known hosts via server name 
+  command: ssh-keygen -f "~/.ssh/known_hosts" -R ""{{ item }}""
+  with_items:
+    - '{{ inventory_hostname }}'
+    - '{{ inventory_hostname_short }}'
+  tags: 
+    - hcloud_cleanup
+
+- name: run command ssh-keygen to remove old server ssh keys from known hosts vi server ip 
+  command: ssh-keygen -f "~/.ssh/known_hosts" -R ""{{ item }}""
+  with_items:
+    - "{{ oldServer.hcloud_server_info[0].ipv4_address }}"
+  when: oldServer.hcloud_server_info is defined and oldServer.hcloud_server_info != []
+  tags: 
+    - hcloud_cleanup
+
+- name: delete old server
+  hcloud_server:
+    api_token: "{{ hcloud_token }}"
+    image: "{{ oldServer.hcloud_server_info[0].image }}"
+    location: "{{ oldServer.hcloud_server_info[0].location }}"
+    name: "{{ inventory_hostname_short }}"
+    server_type: "{{ oldServer.hcloud_server_info[0].server_type }}"
+    state: absent
+  when: oldServer.hcloud_server_info is defined and oldServer.hcloud_server_info != []
+  tags: 
+    - hcloud_cleanup
+
+- name: create a new server 
+  hcloud_server: 
+    api_token: "{{ hcloud_token }}"
+    image: "{{ hcloud_server__image }}"
+    location: "{{ group_names[0] }}"
+    name: "{{ inventory_hostname_short }}"
+    server_type: "{{ hcloud_server__server_type }}"
+    ssh_keys: "{{ ssh_keys }}"
+    state: present
+
+- name: get server info from created server 
+  hcloud_server_info:
+    api_token: "{{ hcloud_token }}"
+    name: "{{ inventory_hostname_short }}"
+  register: server
+
+- name: print server info 
+  debug:
+    msg:
+      - "finished creating {{ server.hcloud_server_info[0].name }}"
+      - "id: {{ server.hcloud_server_info[0].id }}"
+      - "type:        {{ server.hcloud_server_info[0].server_type }}"
+      - "status:      {{ server.hcloud_server_info[0].status }}"
+      - "datacenter:  {{ server.hcloud_server_info[0].datacenter }}"
+      - "{{ inventory_hostname }}  IN A     {{ server.hcloud_server_info[0].ipv4_address }}"
+      - "{{ inventory_hostname }}  IN AAAA  {{ server.hcloud_server_info[0].ipv6 }}"
+
+- name: Set ipv4 and ipv6 addresses to fact variables
+  set_fact:
+    "{{ inventory_hostname_short }}_ipv4_address": "{{ server.hcloud_server_info[0].ipv4_address }}"
+    "{{ inventory_hostname_short }}_ipv6_address": "{{ server.hcloud_server_info[0].ipv6 | ipaddr('net') | ipaddr('1') | ipaddr('address') }}"
+    cacheable: yes
+
+- name: "create reverse dns entries for server"
+  hcloud_rdns:
+    api_token: "{{ hcloud_token }}"
+    server: "{{ inventory_hostname_short }}"
+    ip_address: "{{ item }}"
+    dns_ptr: "{{ inventory_hostname }}"
+    state: present
+  with_items:
+    - '{{ vars[inventory_hostname_short + "_ipv6_address"] }}'
+    - '{{ vars[inventory_hostname_short + "_ipv4_address"] }}'
+  register: ptrResponse
+
+- name: print ptrResponse
+  debug: msg="{{ ptrResponse }}"  
+
+- name: Create json body
+  set_fact:
+    hetznerDnsConsoleRecords: '{ "records": [
+      { "value":"{{ vars[inventory_hostname_short + "_ipv4_address"] }}",
+        "ttl":60, "type":"A", "name":"{{ inventory_hostname_short }}",
+        "zone_id":"{{ hetzner_dns_zone_id }}" },
+      { "value":"{{ vars[inventory_hostname_short + "_ipv6_address"] }}",
+        "ttl":60, "type":"AAAA", "name":"{{ inventory_hostname_short }}",
+        "zone_id":"{{ hetzner_dns_zone_id }}"} 
+      ]}'
+    cacheable: yes
+
+- name: Print json body
+  debug:
+    var: hetznerDnsConsoleRecords
+
+- name: Add a new DNS records for the new server to zone file
+  uri:
+    url: https://dns.hetzner.com/api/v1/records/bulk
+    method: POST
+    status_code: 200
+    headers:
+      Content-Type: application/json
+      Auth-API-Token: "{{ hetzner_dns_token }}"
+    body_format: json
+    body:  "{{ hetznerDnsConsoleRecords }}"
+  when: hetznerDnsConsoleRecords is defined and hetznerDnsConsoleRecords != []
+
+- name: Wait for forward dns A-record changed
+  command: "dig @9.9.9.9 -t A {{ inventory_hostname }} +short"
+  register: dig_result
+  until: '"{{ vars[inventory_hostname_short + "_ipv4_address"] }}" in dig_result.stdout'
+  retries: 60
+  delay: 5
+  changed_when: '"{{ vars[inventory_hostname_short + "_ipv4_address"] }}" in dig_result.stdout'
+
+- name: Wait for forward dns AAAA-record changed
+  command: "dig @9.9.9.9 -t AAAA {{ inventory_hostname }} +short"
+  register: dig_result
+  until: '"{{ vars[inventory_hostname_short + "_ipv6_address"] }}" in dig_result.stdout'
+  retries: 60
+  delay: 5
+  changed_when: '"{{ vars[inventory_hostname_short + "_ipv6_address"] }}" in dig_result.stdout'
+
+- name: Wait for reverse dns records changed
+  command: "dig @9.9.9.9 -x {{ item }} +short"
+  register: dig_result
+  until: "'{{ inventory_hostname }}' in dig_result.stdout"
+  retries: 60
+  delay: 5
+  with_items:
+    - '{{ vars[inventory_hostname_short + "_ipv6_address"] }}'
+    - '{{ vars[inventory_hostname_short + "_ipv4_address"] }}'
+  changed_when: "'{{ inventory_hostname }}' in dig_result.stdout"
+
+- name: Wait 300 seconds for port 22 to become open and contain "OpenSSH"
+  wait_for:
+    port: 22
+    host: '{{ vars[inventory_hostname_short + "_ipv4_address"] }}'
+    search_regex: OpenSSH
+    delay: 10
+  vars:
+    ansible_connection: local
+
+- name: Accept new SSH host keys
+  connection: local
+  become: false
+  shell: |
+    ssh-keygen -F {{ inventory_hostname }} || 
+      ssh-keyscan -H {{ inventory_hostname }} >> ~/.ssh/known_hosts
+  register: known_hosts_script
+  changed_when: "'found' not in known_hosts_script.stdout"

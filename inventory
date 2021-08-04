@@ -1,0 +1,30 @@
+# file: inventory
+
+[nbg1_hcloudservers]
+
+
+[hel1_hcloudservers]
+
+
+[fsn1_hcloudservers]
+server1.domain.tld hcloud_server__server_type="cx11-ceph" hcloud_server__image="ubuntu-20.04"
+server2.domain.tld hcloud_server__server_type="cx11-ceph" hcloud_server__image="ubuntu-20.04"
+server3.domain.tld hcloud_server__server_type="cx11-ceph" hcloud_server__image="ubuntu-20.04"
+
+
+[hcloudservers:children]
+hel1_hcloudservers
+nbg1_hcloudservers
+fsn1_hcloudservers
+
+
+[fsn1:children]
+fsn1_hcloudservers
+
+
+[nbg1:children]
+nbg1_hcloudservers
+
+
+[hel1:children]
+hel1_hcloudservers

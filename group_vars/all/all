@@ -1,0 +1,8 @@
+---
+# nonsensitive data
+# sensitiv data
+hetzner_dns_token: "{{ vault_hetzner_dns_token }}"
+hetzner_dns_zone_id: "{{vault_hetzner_dns_zone_id}}" 
+ssh_keys:
+    - "{{vault_local_user_ssh_key_name_01}}"
+    - "{{vault_local_user_ssh_key_name_02}}"
